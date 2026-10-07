@@ -43,6 +43,7 @@ public static class GameSetup
     SetupControlPointDefenderManager();
     SoundLibrary.Setup();
     Artifacts.Setup();
+    WarcraftLegacies.Source.Ai.AiSetup.Setup();
     AllLegends.Setup();
     ShoreSetup.Setup();
     ControlPointSetup.Setup();
