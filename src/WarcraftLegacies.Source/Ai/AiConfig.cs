@@ -53,8 +53,9 @@ public static class AiWorld
   public const float LegionNorthrendPortalX = -1500f;   // beside Crystalsong Forest
   public const float LegionNorthrendPortalY = 20875f;
   //  * Kalimdor end after the summon (Felwood). Also where a bot Legion's host is collected at the summon.
-  public const float LegionExitX = -17377f;
-  public const float LegionExitY = 8732f;
+  //    0.34.3: back to the v33 spot beside Felwood -- (-17377, 8732) was next to Auberdine.
+  public const float LegionExitX = -14257f;
+  public const float LegionExitY = 8475f;
   //  * WL's own exterior Demon Portal (n037, created at (0,0) by a caster-less summon) is rebuilt here, beside
   //    Quel'Danas / the Sunwell, and WL's Antoran portal (n03C) is re-pointed at it.
   public const float LegionSunwellPortalX = 17856f;

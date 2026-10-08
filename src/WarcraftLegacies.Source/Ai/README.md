@@ -14,7 +14,7 @@ WarcraftLegacies.Source.Ai.AiSetup.Setup();   // directly after Artifacts.Setup(
 | `AiUpgrades.cs` | Data: tech pools per faction, building upgrades, event researches |
 | `AiDebug.cs` | Chat commands, `-dump` file writer, on-screen readouts |
 
-The chat banner at game start shows the build (`WL AI build v…`). If it doesn't, the map is stale.
+The chat banner at game start shows the version (`WL AI 0.34.3`). If it doesn't, the map is stale.
 
 ## Chat commands
 
@@ -89,40 +89,23 @@ Developer checks (Python, `pip install tree-sitter tree-sitter-c-sharp`):
 transpile step, not at `dotnet build`) and `tools/map_audit.py <map.w3x> <Ai folder>` (every graph edge
 checked against the map's real pathing).
 
-## Known WL bug worth fixing in the fork: `%` in quest/power text
+## Fixed in this fork: `%` in quest/power text
 
 `SYSTEM ERROR: Kul'tiras failed to execute OnQuestProgressChanged: … invalid use of '%' in replacement string`
-(also seen for Stormwind). WL's `Loc.Format` uses `string.Replace`, which in the Lua build treats `%` in the
-replacement as a pattern character. Any power text with a percentage (e.g. "35%") crashes the quest reward
-**before** it hands over units — Kul Tiras lost its whole base this way. Upstream WL fixed it (#4083).
-In `src/MacroTools/Localization/Loc.cs`, inside `Format(string english, string language, …)`:
+(also Stormwind). WL's `Loc.Format` used `string.Replace`, which in the Lua build treats `%` in the replacement as
+a pattern character, so any power text with a percentage (e.g. "35%") crashed the quest reward before it handed
+over units. History upstream: #4061 introduced a safe replacement, #4083 removed it again (WL 4.8.2 ships that
+version), #4189 (5.0 beta, a 253-file commit) brought it back. That commit can't be cherry-picked on its own, so
+this fork carries the same small change in `src/MacroTools/Localization/Loc.cs` as its own commit (0.34.3). The
+AI's Kul Tiras repair stays as a harmless fallback.
 
-```csharp
-// before
-template = template.Replace(token, Get(value, language));
-// after
-template = ReplaceLiteral(template, token, Get(value, language));
-```
+## Versions
 
-and add to the `Loc` class:
+`0.MINOR.PATCH` -- a feature build raises MINOR, a fix-only build raises PATCH. The same name is used for the
+in-game banner ("WL AI 0.34.3"), the `-dump` header and the git tag.
 
-```csharp
-internal static string ReplaceLiteral(string text, string token, string value)
-{
-  if (token.Length == 0)
-  {
-    return text;
-  }
+## Translator limit to remember (CSharp.lua)
 
-  var index = text.IndexOf(token);
-  while (index >= 0)
-  {
-    text = text.Substring(0, index) + value + text.Substring(index + token.Length);
-    index = text.IndexOf(token, index + value.Length);
-  }
-
-  return text;
-}
-```
-
-Until then the AI repairs only the Kul Tiras base hand-over (not the lost power).
+A class may have only about 55 static fields with a non-literal initializer (`= new()`, a method call ...). Fields
+beyond that are silently `nil` at runtime -- no build error. `tools/check_refs.py` reports every class over 45;
+create new collections in an Init method instead (see `SimpleBot.InitState`).

@@ -8,7 +8,11 @@ using MacroTools.ControlPoints;
 using MacroTools.GameTime;
 using WarcraftLegacies.Source.Factions.Legion.Quests;
 
-// Warcraft Legacies AI -- build v34.2 (robustness: isolated tick/commands/dump; area clears; links). main / 4.8.x.
+// Warcraft Legacies AI -- build 0.34.3 (hotfix). main / 4.8.x.
+//  * 0.34.3: 18 static collections created in InitState -- CSharp.lua left static fields with initializers past
+//    ~55 per class nil, which broke portals, area clears and every bot's attack logic (v34-v34.2). Legion exit
+//    back beside Felwood; Legion's Argus buildings placed on searched open ground. Versions now 0.MINOR.PATCH.
+// Warcraft Legacies AI -- build v34.2 (robustness: isolated tick/commands/dump; area clears; links).
 //  * v34.2: every wave-tick subtask, summon step, chat command and dump section runs isolated (one error used
 //    to stop the gate sweep, -dump and -portals); gates swept first. Area clears (Oculus, Nexus). Highbank <->
 //    Southern Highlands, Nazmir <-> Kezan ship. Neutral bias 0.5. -help shortened (README.md has the list).
@@ -1414,8 +1418,36 @@ namespace WarcraftLegacies.Source.Ai
 
     public static player BotAt(int i) => Bots[i];
 
+    // 0.34.3: these collections are created here instead of with "= new()" at their declaration. The C#->Lua
+    // translator (CSharp.lua) builds every static field that has an initializer inside one Lua function, and it
+    // only handles about 55 of them per class (Lua upvalue limit); fields past that were silently left nil -- that
+    // broke the portals, area clears and with them all bot attacks in v34-v34.2. Keep SimpleBot below ~40
+    // initialized static fields (tools/check_refs.py checks it) and create new collections here instead.
+    private static void InitState()
+    {
+      _nodeSets = new Dictionary<string, HashSet<int>>();
+      _goalHopCache = new Dictionary<string, Dictionary<int, int>>();
+      _stuckTarget = new Dictionary<int, unit>();
+      _stuckSince = new Dictionary<int, float>();
+      _stuckHp = new Dictionary<int, float>();
+      _stuckOwner = new Dictionary<int, player>();
+      _blackUnits = new Dictionary<int, List<unit>>();
+      _blackUntil = new Dictionary<int, List<float>>();
+      _tickErrors = new HashSet<string>();
+      _killTarget = new Dictionary<int, unit>();
+      _killDone = new HashSet<int>();
+      _killSince = new Dictionary<int, float>();
+      _clearDone = new HashSet<int>();
+      _clearActive = new Dictionary<int, int>();
+      _clearSince = new Dictionary<int, float>();
+      _pairLink = new List<int>();
+      _pairA = new List<unit>();
+      _pairB = new List<unit>();
+    }
+
     public static void Setup()
     {
+      InitState();
       for (var i = 0; i < 24; i++)
       {
         var p = Player(i);
@@ -1489,8 +1521,9 @@ namespace WarcraftLegacies.Source.Ai
 
       DestroyGroup(g);
 
-      // ring of 8 spots, 900 out from the start location (buildings ~500 wide -> no overlap):
-      // 5 barracks, 1 altar, 2 farms. A spot on unwalkable ground is skipped.
+      // 0.34.3: each building gets its own open spot (searched outward from the start location, footprint
+      // checked, kept apart from the others) -- the old fixed ring of 8 found only 1 walkable spot in Argus.
+      // 5 barracks, 1 altar, 2 farms.
       var types = new List<int>();
       var barracks = new List<int>();
       AddCategory(fac, UnitCategory.Barracks, barracks);
@@ -1503,21 +1536,62 @@ namespace WarcraftLegacies.Source.Ai
       AddFirstOf(fac, UnitCategory.Farm, types);
       AddFirstOf(fac, UnitCategory.Farm, types);
       var placed = 0;
+      var usedX = new List<float>();
+      var usedY = new List<float>();
       for (var i = 0; i < types.Count; i++)
       {
-        var ang = i * 0.785398f;
-        var x = AiWorld.LegionStartX + 900f * Cos(ang);
-        var y = AiWorld.LegionStartY + 900f * Sin(ang);
-        if (IsTerrainPathable(x, y, PATHING_TYPE_WALKABILITY))
+        if (!FindBuildSpot(AiWorld.LegionStartX, AiWorld.LegionStartY, usedX, usedY))
         {
           continue;
         }
 
-        CreateUnit(legion, types[i], x, y, 270f);
+        CreateUnit(legion, types[i], _spotX, _spotY, 270f);
+        usedX.Add(_spotX);
+        usedY.Add(_spotY);
         placed++;
       }
 
       LogPin("Legion: Argus start -- " + I2S(removed) + " workers replaced by " + I2S(placed) + " buildings");
+    }
+
+    // open ground for a ~512-wide building: rings 500..2000 out, 16 directions; centre and 4 corners walkable and
+    // >= 600 from every spot already used. Result in _spotX/_spotY.
+    private static bool FindBuildSpot(float cx, float cy, List<float> usedX, List<float> usedY)
+    {
+      for (var r = 500f; r <= 2000f; r += 250f)
+      {
+        for (var i = 0; i < 16; i++)
+        {
+          var a = i * 0.392699f;
+          var x = cx + r * Cos(a);
+          var y = cy + r * Sin(a);
+          if (IsTerrainPathable(x, y, PATHING_TYPE_WALKABILITY)
+              || IsTerrainPathable(x + 220f, y + 220f, PATHING_TYPE_WALKABILITY)
+              || IsTerrainPathable(x - 220f, y + 220f, PATHING_TYPE_WALKABILITY)
+              || IsTerrainPathable(x + 220f, y - 220f, PATHING_TYPE_WALKABILITY)
+              || IsTerrainPathable(x - 220f, y - 220f, PATHING_TYPE_WALKABILITY))
+          {
+            continue;
+          }
+
+          var free = true;
+          for (var k = 0; k < usedX.Count && free; k++)
+          {
+            var dx = usedX[k] - x;
+            var dy = usedY[k] - y;
+            free = dx * dx + dy * dy >= 600f * 600f;
+          }
+
+          if (free)
+          {
+            _spotX = x;
+            _spotY = y;
+            return true;
+          }
+        }
+      }
+
+      return false;
     }
 
     private static void AddFirstOf(Faction fac, UnitCategory cat, List<int> into)
@@ -2613,7 +2687,7 @@ namespace WarcraftLegacies.Source.Ai
     // v34: graph merge (set at the Legion summon) and node sets per edge-set name (built once).
     public static bool GraphMerged => _graphMerged;
     private static bool _graphMerged;
-    private static readonly Dictionary<string, HashSet<int>> _nodeSets = new();
+    private static Dictionary<string, HashSet<int>> _nodeSets; // 0.34.3: created in InitState (see there)
 
     private static HashSet<int> NodeSetOf(string setName)
     {
@@ -2645,7 +2719,7 @@ namespace WarcraftLegacies.Source.Ai
     // v31: hop distance from every node to the faction's goal CP over its current edge set (all edges, open or
     // not -- topology only). Cached per (set, goal). Null when the faction has no goal, the goal isn't in this
     // edge set, or the faction (or an ally) already owns it.
-    private static readonly Dictionary<string, Dictionary<int, int>> _goalHopCache = new();
+    private static Dictionary<string, Dictionary<int, int>> _goalHopCache; // 0.34.3: created in InitState (see there)
 
     private static Dictionary<int, int> GoalHopsFor(string facName, string setName, player p)
     {
@@ -2707,12 +2781,12 @@ namespace WarcraftLegacies.Source.Ai
     // every "parked forever" cause at once: unreachable islands, blocked bridges, invulnerable CPs, etc.
     private const float StuckSec = 240f;
     private const float BlacklistSec = 300f;
-    private static readonly Dictionary<int, unit> _stuckTarget = new();
-    private static readonly Dictionary<int, float> _stuckSince = new();
-    private static readonly Dictionary<int, float> _stuckHp = new();
-    private static readonly Dictionary<int, player> _stuckOwner = new();
-    private static readonly Dictionary<int, List<unit>> _blackUnits = new();
-    private static readonly Dictionary<int, List<float>> _blackUntil = new();
+    private static Dictionary<int, unit> _stuckTarget; // 0.34.3: created in InitState (see there)
+    private static Dictionary<int, float> _stuckSince; // 0.34.3: created in InitState (see there)
+    private static Dictionary<int, float> _stuckHp; // 0.34.3: created in InitState (see there)
+    private static Dictionary<int, player> _stuckOwner; // 0.34.3: created in InitState (see there)
+    private static Dictionary<int, List<unit>> _blackUnits; // 0.34.3: created in InitState (see there)
+    private static Dictionary<int, List<float>> _blackUntil; // 0.34.3: created in InitState (see there)
 
     private static void TrackStuck(player p, int pid, unit tgt)
     {
@@ -2960,7 +3034,7 @@ namespace WarcraftLegacies.Source.Ai
     }
 
     // v34.2: run one wave-tick subtask; an error is logged (once per subtask) instead of aborting the tick.
-    private static readonly HashSet<string> _tickErrors = new();
+    private static HashSet<string> _tickErrors; // 0.34.3: created in InitState (see there)
 
     private static void Safe(string name, System.Action task)
     {
@@ -3297,9 +3371,9 @@ namespace WarcraftLegacies.Source.Ai
     // ---- v31 kill targets ------------------------------------------------------------------------------------
     // AiConfig.KillTargets: a faction's bot hunts one specific unit (found by TYPE id near X/Y) from AtSec until
     // it is dead. Assigned on the 15 s wave tick (one range scan, once); Process just reads _killTarget.
-    private static readonly Dictionary<int, unit> _killTarget = new();
-    private static readonly HashSet<int> _killDone = new();
-    private static readonly Dictionary<int, float> _killSince = new();
+    private static Dictionary<int, unit> _killTarget; // 0.34.3: created in InitState (see there)
+    private static HashSet<int> _killDone; // 0.34.3: created in InitState (see there)
+    private static Dictionary<int, float> _killSince; // 0.34.3: created in InitState (see there)
     private const float KillGiveUpSec = 360f; // army can't finish it (too strong / unreachable) -> give up
 
     private static void AssignKillTargets()
@@ -3350,9 +3424,9 @@ namespace WarcraftLegacies.Source.Ai
     }
 
     // ---- v34.2 area clears (AiConfig.ClearAreas) ----
-    private static readonly HashSet<int> _clearDone = new();
-    private static readonly Dictionary<int, int> _clearActive = new();   // pid -> ClearAreas index (-1 = none)
-    private static readonly Dictionary<int, float> _clearSince = new();
+    private static HashSet<int> _clearDone; // 0.34.3: created in InitState (see there)
+    private static Dictionary<int, int> _clearActive; // 0.34.3: created in InitState (see there)   // pid -> ClearAreas index (-1 = none)
+    private static Dictionary<int, float> _clearSince; // 0.34.3: created in InitState (see there)
 
     private static void AssignClearAreas()
     {
@@ -4329,9 +4403,9 @@ namespace WarcraftLegacies.Source.Ai
     // whole areas at runtime (CleanupNeutralPassiveUnits), which is the likely reason only one ship pair
     // survived. A watchdog on the wave tick rebuilds any pair whose unit disappeared, and every pair is created
     // inside try/catch so one failure can't stop the others.
-    private static readonly List<int> _pairLink = new();
-    private static readonly List<unit> _pairA = new();
-    private static readonly List<unit> _pairB = new();
+    private static List<int> _pairLink; // 0.34.3: created in InitState (see there)
+    private static List<unit> _pairA; // 0.34.3: created in InitState (see there)
+    private static List<unit> _pairB; // 0.34.3: created in InitState (see there)
 
     public static int PortalPairCount => _pairLink.Count;
     public static unit PortalA(int i) => _pairA[i];
@@ -4702,7 +4776,7 @@ namespace WarcraftLegacies.Source.Ai
   {
     // Bump on every code drop. Shown in chat 3s into the game and in every -dump header, so we can always
     // tell which AI build a map actually contains (a stale build looked exactly like "the new commands are broken").
-    public const string Build = "v34.2";
+    public const string Build = "0.34.3";
 
     public static void Setup()
     {
@@ -4717,7 +4791,7 @@ namespace WarcraftLegacies.Source.Ai
     {
       for (var i = 0; i < 24; i++)
       {
-        DisplayTimedTextToPlayer(Player(i), 0, 0, 15, "|cff00ffffWL AI build " + Build + "|r  (type -help for AI commands)");
+        DisplayTimedTextToPlayer(Player(i), 0, 0, 15, "|cff00ffffWL AI " + Build + "|r  (type -help for AI commands)");
       }
     }
   }
