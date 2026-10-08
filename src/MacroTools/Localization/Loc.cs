@@ -96,10 +96,33 @@ public static class Loc
     var template = Get(english, language);
     foreach (var (token, value) in args)
     {
-      template = template.Replace(token, Get(value, language));
+      template = ReplaceLiteral(template, token, Get(value, language));
     }
 
     return template;
+  }
+
+  /// <summary>
+  /// Replaces every occurrence of <paramref name="token"/> in <paramref name="text"/> with <paramref name="value"/>,
+  /// treating both literally. <see cref="string.Replace(string, string)"/> is not safe here: in the Lua build a
+  /// '%' in the replacement is read as a pattern character and crashes (e.g. a power text containing "35%").
+  /// Same approach as upstream WarcraftLegacies 5.x.
+  /// </summary>
+  internal static string ReplaceLiteral(string text, string token, string value)
+  {
+    if (token.Length == 0)
+    {
+      return text;
+    }
+
+    var index = text.IndexOf(token);
+    while (index >= 0)
+    {
+      text = text.Substring(0, index) + value + text.Substring(index + token.Length);
+      index = text.IndexOf(token, index + value.Length);
+    }
+
+    return text;
   }
 
   [EditorBrowsable(EditorBrowsableState.Never)]
